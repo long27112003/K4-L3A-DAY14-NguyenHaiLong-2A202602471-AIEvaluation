@@ -30,11 +30,11 @@ critical.
 
 | Metric | Acceptable Low Score Scenario | Critical Low Score Scenario | Action Required |
 |---|---|---|---|
-| Faithfulness | | | |
-| Answer Relevance | | | |
-| Context Recall | | | |
-| Context Precision | | | |
-| Completeness | | | |
+| Faithfulness | Câu chào hỏi xã giao, câu hỏi mở ngoài tài liệu hoặc bot chủ động từ chối lịch sự ("Tôi không tìm thấy thông tin trong tài liệu"). | Trả lời sai/bịa đặt thông tin chính sách bảo hành, hoàn tiền hoặc thông số kỹ thuật sản phẩm OrbitTech (ảo giác/hallucination). | Thêm chỉ dẫn nghiêm ngặt trong prompt ("Chỉ dựa vào context, không suy diễn"), giảm temperature về 0, bổ sung cơ chế citation dẫn nguồn. |
+| Answer Relevance | Khách hỏi quá ngắn/mơ hồ và bot chủ động hỏi lại để làm rõ ngữ cảnh ("Bạn muốn hỏi về mẫu laptop nào của OrbitTech?"). | Trả lời lạc đề hoàn toàn, không liên quan đến câu hỏi mua sắm hoặc hỗ trợ kỹ thuật của khách hàng. | Cải thiện System Prompt, bổ sung bước phân loại ý định (Intent Classification) trước khi sinh câu trả lời, nhắc nhở trả lời trực diện. |
+| Context Recall | Câu hỏi đơn giản chỉ cần 1 ý định nghĩa ngắn gọn, không yêu cầu trích xuất toàn bộ chi tiết tài liệu nền. | Câu hỏi phức hợp (multi-hop/nhiều điều kiện) nhưng retriever bỏ sót các điều khoản quan trọng dẫn đến câu trả lời thiếu thông tin cốt lõi. | Tăng giá trị `top_k`, điều chỉnh kích thước chunk và overlap hợp lý, áp dụng Hybrid Search (BM25 + Dense vector search) hoặc Query Expansion (HyDE). |
+| Context Precision | `top_k` lớn lấy thêm các chunk ngữ cảnh phụ trợ, nhưng chunk đúng vẫn nằm trong top và LLM vẫn tổng hợp chính xác. | Các chunk liên quan bị xếp ở cuối danh sách (rank thấp), chunk rác chiếm top 1-2 khiến generator bị nhiễu thông tin hoặc phân tâm. | Tích hợp thêm bước Reranking (như Cohere Rerank / Cross-Encoder) sau retrieval, fine-tune lại embedding model trên tập dữ liệu kỹ thuật của OrbitTech. |
+| Completeness | Khách hàng chỉ cần câu trả lời ngắn gọn dạng Yes/No hoặc tóm tắt nhanh không cần liệt kê toàn bộ thông số. | Khách hỏi quy trình hoặc điều kiện đầy đủ (ví dụ: các bước đổi trả hàng) nhưng bot chỉ nêu 1 bước rồi dừng lại. | Cải thiện prompt yêu cầu trả lời có cấu trúc (bullet points/numbered list), tăng max_tokens, kiểm tra độ phủ các keywords/entities so với expected answer. |
 
 ### Exercise 1.2 — Bias trong LLM-as-a-Judge
 
@@ -47,14 +47,24 @@ Ba bias thường gặp:
 **Câu 1: Thiết kế experiment phát hiện position bias với ít nhất hai conditions.**
 
 > *Câu trả lời:*
+> Thiết kế thử nghiệm đánh giá cặp (Pairwise Evaluation) trên tập 50 câu hỏi:
+> - **Condition 1 (Original Order):** Prompt LLM Judge đánh giá so sánh chất lượng giữa `[Answer A, Answer B]`.
+> - **Condition 2 (Swapped Order):** Giữ nguyên câu hỏi và tiêu chí, hoán đổi vị trí hiển thị thành `[Answer B, Answer A]`.
+> - **Đo lường & Kết luận:** Tính tỷ lệ bất nhất vị trí (Position Inconsistency Rate) = % số lần LLM Judge đổi lựa chọn sang đáp án khác chỉ vì vị trí của nó thay đổi (ưu tiên chọn vị trí 1 bất kể là A hay B). Nếu tỷ lệ này > 15%, mô hình có Position Bias rõ rệt. Giải pháp là chạy cả 2 chiều và chỉ ghi nhận điểm khi đồng nhất, hoặc xáo trộn ngẫu nhiên vị trí.
 
 **Câu 2: Làm thế nào giảm verbosity bias bằng rubric design?**
 
 > *Câu trả lời:*
+> Trong Rubric chấm điểm, thiết kế rõ ràng tiêu chí **Độ cô đọng (Conciseness) & Mật độ thông tin (Fact Density)**:
+> 1. Quy định rõ: "Câu trả lời dài dòng, chứa từ ngữ đệm, lặp ý hoặc không trực tiếp giải quyết câu hỏi sẽ bị trừ điểm (ví dụ: trừ 1 điểm nếu dài hơn 150 từ mà không thêm giá trị mới)."
+> 2. Đưa ra hướng dẫn chấm điểm dựa trên danh sách luận điểm/sự thật cần đạt (Checklist of Atomic Facts) thay vì đánh giá cảm tính tổng thể.
+> 3. Trong thang điểm 1-5, định nghĩa mức 5 là "Đầy đủ, chính xác và súc tích nhất", còn trả lời dài nhưng lan man chỉ đạt mức 3.
 
 **Câu 3: Tại sao cần calibrate LLM judge với human labels?**
 
 > *Câu trả lời:*
+> 1. **Kiểm chứng độ tin cậy:** LLM Judge có thể mắc các thiên kiến tiềm ẩn (Leniency bias cho điểm quá rộng rãi > 0.8, hoặc Severity bias quá khắt khe < 0.3, hoặc tự ưu ái phong cách của chính họ).
+> 2. **Căn chỉnh ngưỡng quyết định:** So sánh điểm của LLM Judge với tập dữ liệu con người đã gán nhãn (Human Ground-Truth) để tính hệ số tương quan (như Spearman, Pearson hoặc Cohen's Kappa). Qua đó điều chỉnh ngưỡng (threshold) hoặc hiệu chỉnh lại prompt rubric cho sát với tiêu chuẩn thực tế của doanh nghiệp.
 
 ### Exercise 1.3 — Evaluation trong CI/CD
 
@@ -62,13 +72,16 @@ Ba bias thường gặp:
 
 | Metric | Threshold | Lý do |
 |---|---:|---|
-| Faithfulness | | |
-| Answer Relevance | | |
-| Completeness | | |
+| Faithfulness | 0.85 | Ngăn ngừa ảo giác (hallucination). Trong thương mại điện tử / kỹ thuật, cung cấp sai chính sách bảo hành hoặc sai giá sẽ gây rủi ro pháp lý và thiệt hại tài chính. |
+| Answer Relevance | 0.80 | Đảm bảo câu trả lời giải quyết trực tiếp thắc mắc của khách hàng, tránh trả lời vòng vo gây ức chế cho người dùng. |
+| Completeness | 0.75 | Đảm bảo cung cấp đầy đủ các bước hướng dẫn hoặc điều kiện cần thiết để khách hàng có thể tự xử lý vấn đề. |
 
 **Câu 2: Khi nào dùng offline evaluation, online evaluation và human review?**
 
 > *Câu trả lời:*
+> - **Offline Evaluation:** Dùng trong giai đoạn phát triển (Development) và cổng kiểm soát CI/CD trước khi deploy. Chạy tự động trên bộ Golden Dataset cố định để đo lường độ hồi quy (Regression Testing) nhanh chóng, chi phí thấp, an toàn tuyệt đối vì không ảnh hưởng đến người dùng thật.
+> - **Online Evaluation:** Dùng khi hệ thống đã được triển khai trên môi trường Production (A/B testing, Canary deployment). Đánh giá trực tiếp trên luồng người dùng thật thông qua các tín hiệu hành vi: tỷ lệ bấm Thumbs Up/Down, tỷ lệ phiên chat hoàn thành (Task Completion Rate), thời gian phản hồi (Latency), và tỷ lệ chuyển tiếp sang tổng đài viên (Escalation Rate).
+> - **Human Review:** Dùng định kỳ (đánh giá ngẫu nhiên 1-5% dữ liệu thực tế) hoặc khi xử lý các trường hợp tranh chấp/điểm số thấp bất thường. Đồng thời dùng để gán nhãn dữ liệu chuẩn giúp hiệu chuẩn (calibrate) lại LLM Judge và liên tục mở rộng bộ Golden Dataset.
 
 ---
 
