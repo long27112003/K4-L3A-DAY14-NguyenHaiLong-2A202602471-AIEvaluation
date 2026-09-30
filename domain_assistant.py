@@ -238,8 +238,73 @@ class BM25Retriever:
         )
 
 
+import urllib.error
+import urllib.request
+
 class TextGenerator(Protocol):
     def generate(self, prompt: str) -> str: ...
+
+
+class GeminiGenerator:
+    def __init__(self, api_key: str, model: str = "gemini-3.8-flash", max_output_tokens: int = 300) -> None:
+        self.api_key = api_key
+        # In current environment, the active model is gemini-3.8-flash
+        if not model or model.startswith("gpt-") or "1.5" in model or "2.5" in model:
+            self.model = "gemini-3.8-flash"
+        else:
+            self.model = model
+        self.max_output_tokens = max_output_tokens
+
+    def generate(self, prompt: str) -> str:
+        models_to_try = [self.model]
+        for fallback in ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
+            if fallback not in models_to_try:
+                models_to_try.append(fallback)
+
+        last_error = None
+        for current_model in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={self.api_key}"
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.0,
+                    "maxOutputTokens": self.max_output_tokens,
+                },
+            }
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+
+            for attempt in range(4):
+                try:
+                    with urllib.request.urlopen(req, timeout=60) as resp:
+                        result = json.loads(resp.read().decode("utf-8"))
+                        candidates = result.get("candidates", [])
+                        if candidates and "content" in candidates[0]:
+                            parts = candidates[0]["content"].get("parts", [])
+                            if parts and "text" in parts[0]:
+                                self.model = current_model
+                                time.sleep(1.0)  # Gentle spacing between calls
+                                return parts[0]["text"].strip()
+                        raise RuntimeError("Gemini API returned empty candidates or invalid structure")
+                except urllib.error.HTTPError as e:
+                    err_body = e.read().decode("utf-8")
+                    last_error = RuntimeError(f"Gemini API HTTP {e.code}: {err_body}")
+                    if e.code == 404:
+                        # Model not found on this endpoint, try next model
+                        break
+                    elif e.code in (429, 500, 502, 503, 504):
+                        # Transient high demand / rate limit, wait and retry
+                        time.sleep(2.5 * (attempt + 1))
+                        continue
+                    raise last_error from e
+                except Exception as e:
+                    last_error = RuntimeError(f"Gemini API request failed: {e}")
+                    time.sleep(2.0)
+                    continue
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("Failed to generate response with Gemini API")
 
 
 class OpenAIGenerator:
@@ -264,6 +329,20 @@ class OpenAIGenerator:
         if not answer:
             raise RuntimeError("OpenAI returned an empty answer")
         return answer
+
+
+def create_default_generator(max_output_tokens: int = 300) -> TextGenerator:
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+    model = (os.getenv("GEMINI_MODEL") or os.getenv("OPENAI_MODEL") or "").strip()
+
+    if gemini_key or openai_key.startswith("AIza"):
+        key = gemini_key or openai_key
+        return GeminiGenerator(api_key=key, model=model, max_output_tokens=max_output_tokens)
+    elif openai_key:
+        return OpenAIGenerator(max_output_tokens=max_output_tokens)
+    else:
+        raise RuntimeError("No API key found in .env (expected GEMINI_API_KEY or OPENAI_API_KEY)")
 
 
 @dataclass(frozen=True)
@@ -299,7 +378,7 @@ class DomainAssistant:
         return cls(
             corpus_id,
             BM25Retriever(chunks),
-            generator if generator is not None else OpenAIGenerator(),
+            generator if generator is not None else create_default_generator(),
             top_k,
         )
 
