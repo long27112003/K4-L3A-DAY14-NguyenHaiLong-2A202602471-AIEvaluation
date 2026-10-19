@@ -1,5 +1,7 @@
 # Day 14 — Reflection
 
+**Học viên:** Nguyễn Hải Long · **Mã học viên:** 2A202602471
+
 ## Evaluation Report & Failure Analysis
 
 Dùng kết quả thật trong `artifacts/benchmark_results.json` và kiểm tra lại
